@@ -1,4 +1,3 @@
-#[cfg(any(test, all(target_os = "android", target_arch = "aarch64")))]
 use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
