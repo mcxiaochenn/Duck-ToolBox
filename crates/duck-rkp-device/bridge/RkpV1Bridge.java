@@ -66,10 +66,9 @@ public final class RkpV1Bridge {
         byte[] eek;
         if (curve == 1) eek = p256;
         else if (curve == 2) eek = x25519;
-        // IRPC v3 removed the EEK: such a HAL reports EekCurve::NONE on purpose and only
-        // implements generateCertificateRequestV2, which this bridge cannot drive.
-        else throw new IOException("no EEK curve in HAL hardware info (" + info
-                + "): IRPC v3+ has no EEK, so only the native CSR path can issue here");
+        // IRPC v3 removed the EEK. Diagnostic probe only: try the v2 request entry point so
+        // the report tells whether this HAL accepts a host MacedPublicKey at all.
+        else throw new IOException(v3Probe(api, proxy, info, maced, challenge));
         if (eek.length == 0) throw new IOException("server supplied no EEK chain for curve " + curve);
 
         Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
@@ -102,6 +101,57 @@ public final class RkpV1Bridge {
             writeBytes(output, protectedBytes);
         }
         return buffer.toByteArray();
+    }
+
+    private static String describeHardwareInfo(Object info) {
+        StringBuilder text = new StringBuilder();
+        java.lang.reflect.Field[] fields = info.getClass().getDeclaredFields();
+        for (java.lang.reflect.Field field : fields) {
+            try {
+                field.setAccessible(true);
+                Object value = field.get(info);
+                if (value instanceof byte[]) value = "<" + ((byte[]) value).length + " bytes>";
+                text.append(field.getName()).append('=').append(value).append(' ');
+            } catch (Throwable ignored) {
+                // Fields that cannot be read are simply omitted from the report.
+            }
+        }
+        return text.toString().trim();
+    }
+
+    private static String v3Probe(Class<?> api, Object proxy, Object info, byte[] maced,
+            byte[] challenge) {
+        StringBuilder details = new StringBuilder();
+        details.append("IRPC ").append(describeHardwareInfo(info));
+        java.lang.reflect.Method[] methods = api.getDeclaredMethods();
+        StringBuilder names = new StringBuilder();
+        for (java.lang.reflect.Method method : methods) {
+            names.append(method.getName()).append('(').append(method.getParameterCount())
+                    .append(") ");
+        }
+        details.append(" | methods: ").append(names.toString().trim());
+        try {
+            Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
+            Object key = keyClass.getConstructor().newInstance();
+            keyClass.getField("macedKey").set(key, maced);
+            Object keys = Array.newInstance(keyClass, 1);
+            Array.set(keys, 0, key);
+            java.lang.reflect.Method call = api.getMethod("generateCertificateRequestV2",
+                    keys.getClass(), byte[].class);
+            Object csr = call.invoke(proxy, keys, challenge);
+            byte[] bytes = csr == null ? new byte[0] : (byte[]) csr;
+            details.append(" | GENERATE_CSR_V2_OK length=").append(bytes.length);
+            StringBuilder head = new StringBuilder();
+            for (int i = 0; i < bytes.length && i < 24; i++) {
+                head.append(String.format("%02x", bytes[i]));
+            }
+            details.append(" head=").append(head);
+        } catch (NoSuchMethodException missing) {
+            details.append(" | GENERATE_CSR_V2_ABSENT");
+        } catch (Throwable failure) {
+            details.append(" | GENERATE_CSR_V2_REJECTED ").append(failure.toString());
+        }
+        return details.toString();
     }
 
     private static byte[] errorReply(int status, int code, String message) throws IOException {
