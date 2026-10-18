@@ -99,10 +99,49 @@ pub(crate) fn response_payload(response: &[u8]) -> Result<Vec<u8>> {
         return Err(DeviceRkpError::Rejected(status).into());
     }
     let length = u32::from_le_bytes(response[4..8].try_into().unwrap()) as usize;
-    if length == 0 || length > BUFFER_SIZE - 8 || length > response.len() - 8 {
-        return Err(DeviceRkpError::InvalidResponse("invalid payload length".into()).into());
+    if length != 0 && length <= BUFFER_SIZE - 8 && length <= response.len() - 8 {
+        return Ok(response[8..8 + length].to_vec());
     }
-    Ok(response[8..8 + length].to_vec())
+    // Some firmware reports the buffer capacity instead of the written length, and some
+    // omits the length field entirely. The body is still self-describing CBOR inside a
+    // zero-filled buffer. Recovering it here cannot turn a rejection into a usable
+    // result: the CSR is verified against this challenge and this key afterwards.
+    if let Some(payload) = recover_payload(response) {
+        return Ok(payload);
+    }
+    Err(DeviceRkpError::InvalidResponse(format!(
+        "invalid payload length {length} (header {})",
+        header_hex(response)
+    ))
+    .into())
+}
+
+/// Decodes the body the TA wrote while ignoring an untrustworthy length field: the CSR is
+/// the only CBOR array or map in the buffer, and everything after it stays zero.
+#[cfg(any(test, all(target_os = "android", target_arch = "aarch64")))]
+fn recover_payload(response: &[u8]) -> Option<Vec<u8>> {
+    [8usize, 4].into_iter().find_map(|offset| {
+        let body = response.get(offset..)?;
+        let mut reader = Cursor::new(body);
+        let value: Value = ciborium::from_reader(&mut reader).ok()?;
+        let used = usize::try_from(reader.position()).ok()?;
+        if used < 8 || !matches!(value, Value::Array(_) | Value::Map(_)) {
+            return None;
+        }
+        if body.get(used..)?.iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        Some(body[..used].to_vec())
+    })
+}
+
+#[cfg(any(test, all(target_os = "android", target_arch = "aarch64")))]
+fn header_hex(response: &[u8]) -> String {
+    response
+        .iter()
+        .take(32)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub(crate) fn unwrap_csr(payload: &[u8]) -> Result<Vec<u8>> {

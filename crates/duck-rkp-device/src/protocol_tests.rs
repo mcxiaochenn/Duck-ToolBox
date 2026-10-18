@@ -181,6 +181,27 @@ fn response_payload_enforces_the_status_and_length_fields() {
     assert!(response_payload(&envelope(0, &too_long)).is_err());
 }
 
+/// Firmware may report the buffer capacity, or omit the length field entirely. The body is
+/// still recoverable because it is the only CBOR value in the zero-filled buffer.
+#[test]
+fn response_payload_recovers_a_body_when_the_length_field_lies() {
+    let csr = encode(&Value::Map(vec![(int(61), bytes(vec![0x99; 48]))])).unwrap();
+
+    let mut capacity = vec![0_u8; BUFFER_SIZE];
+    capacity[4..8].copy_from_slice(&(BUFFER_SIZE as u32).to_le_bytes());
+    capacity[8..8 + csr.len()].copy_from_slice(&csr);
+    assert_eq!(response_payload(&capacity).unwrap(), csr);
+
+    let mut headerless = vec![0_u8; BUFFER_SIZE];
+    headerless[4..4 + csr.len()].copy_from_slice(&csr);
+    assert_eq!(response_payload(&headerless).unwrap(), csr);
+
+    // A zero-filled buffer carries no body, and the diagnostic keeps the raw header.
+    let zeros = vec![0_u8; BUFFER_SIZE];
+    let error = response_payload(&zeros).unwrap_err();
+    assert!(error.to_string().contains("header 00000000"));
+}
+
 #[test]
 fn unwrap_csr_extracts_the_authenticated_request() {
     let csr = vec![0x99; 48];

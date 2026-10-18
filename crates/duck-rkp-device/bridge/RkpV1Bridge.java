@@ -66,7 +66,10 @@ public final class RkpV1Bridge {
         byte[] eek;
         if (curve == 1) eek = p256;
         else if (curve == 2) eek = x25519;
-        else throw new IOException("unsupported EEK curve: " + curve);
+        // IRPC v3 removed the EEK: such a HAL reports EekCurve::NONE on purpose and only
+        // implements generateCertificateRequestV2, which this bridge cannot drive.
+        else throw new IOException("no EEK curve in HAL hardware info (" + info
+                + "): IRPC v3+ has no EEK, so only the native CSR path can issue here");
         if (eek.length == 0) throw new IOException("server supplied no EEK chain for curve " + curve);
 
         Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
