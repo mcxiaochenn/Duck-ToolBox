@@ -149,9 +149,45 @@ public final class RkpV1Bridge {
         } catch (NoSuchMethodException missing) {
             details.append(" | GENERATE_CSR_V2_ABSENT");
         } catch (Throwable failure) {
-            details.append(" | GENERATE_CSR_V2_REJECTED ").append(failure.toString());
+            details.append(" | GENERATE_CSR_V2_REJECTED ").append(unwrap(failure));
         }
+        details.append(" | DEVICE_KEY ").append(deviceKeyProbe(api, proxy, challenge));
         return details.toString();
+    }
+
+    private static String deviceKeyProbe(Class<?> api, Object proxy, byte[] challenge) {
+        try {
+            Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
+            java.lang.reflect.Method generate =
+                    api.getMethod("generateEcdsaP256KeyPair", boolean.class, keyClass);
+            Object deviceKey = keyClass.getConstructor().newInstance();
+            Object handle = generate.invoke(proxy, false, deviceKey);
+            Object keys = Array.newInstance(keyClass, 1);
+            Array.set(keys, 0, deviceKey);
+            java.lang.reflect.Method call = api.getMethod("generateCertificateRequestV2",
+                    keys.getClass(), byte[].class);
+            byte[] csr = (byte[]) call.invoke(proxy, keys, challenge);
+            return "CSR_OK length=" + csr.length + " handleLength=" + ((byte[]) handle).length;
+        } catch (NoSuchMethodException missing) {
+            return "NO_SUCH_METHOD " + missing.getMessage();
+        } catch (Throwable failure) {
+            return "REJECTED " + unwrap(failure);
+        }
+    }
+
+    private static String unwrap(Throwable failure) {
+        Throwable cause = failure;
+        while (cause instanceof InvocationTargetException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String text = cause.toString();
+        try {
+            int code = cause.getClass().getField("errorCode").getInt(cause);
+            text += " errorCode=" + code;
+        } catch (Throwable ignored) {
+            // Only ServiceSpecificException carries an error code.
+        }
+        return text;
     }
 
     private static byte[] errorReply(int status, int code, String message) throws IOException {
